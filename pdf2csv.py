@@ -4,7 +4,8 @@ import numpy as np
 import math
 import cv2
 import pytesseract
-from pytesseract import Output
+import time
+from datetime import timedelta
 
 # Path to the location of the Tesseract-OCR executable/cmd
 pytesseract.pytesseract.tesseract_cmd =r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -31,11 +32,24 @@ DATA_CELL_SIZE_RANGE =(80,25, 140, 40) #min width, min height, max width, max he
 MIN_CELL_WIDTH = 15
 ROW_ONE_Y_MIN = 10
 ROW_THREE_Y_MIN = 50 
-CROP_PIXEL = (2,4)
+CROP_PIXEL = (5,4)
 TABLE_SHIFT_START = (104,38)
 TABLE_SHIFT_END = (568,155)
 
-#Global
+#Objects
+class HelpAsker:
+    def __init__(self):
+        self.asked=0
+    
+    def gotHelp(self):
+        self.asked = self.asked+1
+    
+    def howMuchHelp(self):
+        helped =  self.asked
+        return helped
+
+#Global?
+helpsAsked = HelpAsker()
 
 def build3PartDict(scheduled="NaN",staffed="NaN",bls="Nan"):
     return{SCHEDULED:scheduled,STAFFED:staffed,BLS:bls}
@@ -194,15 +208,63 @@ def processImageToString(img,configString):
     returnString = processImageAlgorithmDefault(gray,configString)
     return returnString
 
+def unsharp_mask(image, kernel_size=(5, 5), sigma=1.0, amount=1.0, threshold=0):
+    """Return a sharpened version of the image, using an unsharp mask."""
+    blurred = cv2.GaussianBlur(image, kernel_size, sigma)
+    sharpened = float(amount + 1) * image - float(amount) * blurred
+    sharpened = np.maximum(sharpened, np.zeros(sharpened.shape))
+    sharpened = np.minimum(sharpened, 255 * np.ones(sharpened.shape))
+    sharpened = sharpened.round().astype(np.uint8)
+    if threshold > 0:
+        low_contrast_mask = np.absolute(image - blurred) < threshold
+        np.copyto(sharpened, image, where=low_contrast_mask)
+    return sharpened
+
 #Best guess at effective image processing
 def processImageAlgorithmDefault(grayImg,configString):
-    kernel = np.ones((1, 1), np.uint8)
-    dilated = cv2.dilate(grayImg, kernel, iterations=1)
-    eroded = cv2.erode(dilated, kernel, iterations=1)
-    filtered = cv2.threshold(cv2.bilateralFilter(eroded, 5, 75, 75), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    #optimize character height to 30p - Tesseract quirk
+    resizeCubic = cv2.resize(grayImg, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
-    returnString = pytesseract.image_to_string(filtered,config=configString)
+    #sharpen = unsharp_mask(resizeCubic,amount=2.0)
+    #cv2.imshow("UnsharpMaks",sharpen)
+    #cv2.waitKey(0)
+    #cv2.destroyAllWindows()
+
+    #asked for help 11 times in 20 pages
+    #kernel = np.ones((1, 1), np.uint8)
+    #dilated = cv2.dilate(resizeCubic, kernel, iterations=1)
+    #eroded = cv2.erode(dilated, kernel, iterations=1)
+    #filtered = cv2.threshold(cv2.bilateralFilter(eroded, 5, 75, 75), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+    # asked for help 10 times in 20 pages, very accurate otherwise
+    #deNoised = resizeCubic.copy()
+    #cv2.fastNlMeansDenoising(resizeCubic,deNoised,15.0)
+    #thresh = cv2.threshold(deNoised, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    #flipThresh = cv2.bitwise_not(thresh)
+
+    #clean the noise and then dialate a little
+    deNoised = resizeCubic.copy()
+    cv2.fastNlMeansDenoising(resizeCubic,deNoised,15.0)
+    thresh = cv2.threshold(deNoised, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    kernel = np.ones((2, 2), np.uint8)
+    dilated = cv2.dilate(thresh, kernel, iterations=1)
+    flipThresh = cv2.bitwise_not(dilated)
+   # sharpen = unsharp_mask(flipThresh,amount=2.0)
+    #cv2.imshow("sharpen",sharpen)
+    #cv2.imshow("denoise and dialate",flipThresh)
+    #cv2.waitKey(0)
+    #cv2.destroyAllWindows()
+
+    #hawt Garbage technique
+    #sharpen_kernel = np.array([[0,-1,0], [-1,5,-1], [0,-1,0]]) #from Wikipedia on image processing
+    #sharpen_kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+    #sharpen = cv2.filter2D(resizeCubic, -1, sharpen_kernel)
+    #thresh = cv2.threshold(sharpen, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    #flipThresh = cv2.bitwise_not(thresh)
+
+    returnString = pytesseract.image_to_string(flipThresh,config=configString)
     returnString = returnString.strip()
+    #print(returnString)
     return returnString
 
 def askAHuman(failImg):
@@ -211,6 +273,7 @@ def askAHuman(failImg):
     cv2.destroyAllWindows()
     print("Help Please")
     returnString = input("Picture Value is ? ")
+    helpsAsked.gotHelp()
 
     return returnString
 
@@ -334,7 +397,6 @@ def processPdfPage(pageImg):
                 subRDict[BLS] = cellString
         tableIndex = tableIndex+1
     thisPageDict = buildResultDict(date_Value,metroDict,iftDict,subRDict)
-    print("this Page",thisPageDict)
     return thisPageDict
     
 # write to file as CSV.txt
@@ -402,7 +464,8 @@ print('Document Pages -',pageCount)
 dictList =[]
 #debug value
 #iDicts =
-pageCount = 1
+pageCount = 20
+startTime = time.time()
 for iDicts in range(pageCount):
 #if iDicts:
     image_List = pdf.get_page_images(iDicts)
@@ -422,10 +485,13 @@ for iDicts in range(pageCount):
             print(e)
 
         dictList.append(pageDictonary)
-        print("completed", iDicts)
+        print("completed page", iDicts)
     # percent = iDicts+1
     # percent = round((percent/pageCount)*100,2)
         #print("Prcessing - ", percent,"% (", iDicts," of ",pageCount, " )",end='\r')
-
+endTime = time.time()
+elapsedTime = endTime-startTime
+delta = timedelta(seconds=elapsedTime)
 writeOutCSVFile(dictList,outputFilePath)
-print("Completed")
+helped = helpsAsked.howMuchHelp()
+print("Completed in, ", delta," Helps Asked = ",helped)
