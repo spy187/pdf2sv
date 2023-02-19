@@ -463,8 +463,8 @@ print('Document Pages -',pageCount)
 
 dictList =[]
 #debug value
-#iDicts =
-pageCount = 20
+#iDicts = # start processing at specific page
+#pageCount = 20 # only process X amount of records
 startTime = time.time()
 for iDicts in range(pageCount):
 #if iDicts:
