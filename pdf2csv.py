@@ -84,8 +84,7 @@ def detectAndcorrectSkew(image,thresh):
     # range [-90, 0); as the rectangle rotates clockwise the
     # returned angle trends to 0 -- in this special case we
     # need to add 90 degrees to the angle
-    print("Angle = ", angle)
-    
+  
     #pull back to square - assumes roated clockwise
     if angle !=0:
         angle = 90 - angle
@@ -107,7 +106,7 @@ def detectAndcorrectSkew(image,thresh):
         #cv2.imshow("Rotated", rotated)
         #cv2.waitKey(0)
     
-    #olde code for other roatations
+    #olde code for counterclockwise? roatations
     #if angle < -45:
     #    angle = -(90 + angle)
     # otherwise, just take the inverse of the angle to make
@@ -225,11 +224,6 @@ def processPdfPage(pageImg):
     trimmed = trimHeaderFooter(pageImg)
 
     res,pageImg = makeTableMask(trimmed)
-    cv2.imshow("Page",pageImg)
-    cv2.imshow("Skew - mask?", res)
-    cv2.imshow("Trimmed",trimmed)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
 
     #find Date Box and Main Data Tabel
     contourMain = cv2.findContours(res, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
@@ -281,13 +275,13 @@ def processPdfPage(pageImg):
     dateROI = captureCell(pageImg,dateBox)
     date_Value = processImageToString(dateROI,TESSERACT_DATE_CONFIG)
 
-    tableROI,maskROI = captureDataTable(pageImg,res,tableBox)
+    dataTableROI,dataTableROIMask = captureDataTable(pageImg,res,tableBox)
 
     #Grab Data from the Tabel, <2020 version
     dataBoxMetro = []
     dataBoxIft = []
     dataBoxSubR = []
-    countoursData = cv2.findContours(maskROI, cv2.RETR_EXTERNAL ,cv2.CHAIN_APPROX_SIMPLE)[0]
+    countoursData = cv2.findContours(dataTableROIMask, cv2.RETR_EXTERNAL ,cv2.CHAIN_APPROX_SIMPLE)[0]
     for element in countoursData:
         x, y, w, h = cv2.boundingRect(element)
         if confirmBoxDimension(w,h,DATA_CELL_SIZE_RANGE):
@@ -313,7 +307,7 @@ def processPdfPage(pageImg):
     subRDict = build3PartDict()
     tableIndex =0
     for element in dataOutput:
-        cell = captureCell(tableROI,element)
+        cell = captureCell(dataTableROI,element)
         cellString = processImageToString(cell,TESSERACT_NUMBER_CONFIG)
         if len(cellString) ==0 :
             cellString = askAHuman(cell)
@@ -340,6 +334,7 @@ def processPdfPage(pageImg):
                 subRDict[BLS] = cellString
         tableIndex = tableIndex+1
     thisPageDict = buildResultDict(date_Value,metroDict,iftDict,subRDict)
+    print("this Page",thisPageDict)
     return thisPageDict
     
 # write to file as CSV.txt
@@ -406,9 +401,10 @@ print('Document Pages -',pageCount)
 
 dictList =[]
 #debug value
-iDicts =325
-#for iDicts in range(pageCount):
-if iDicts:
+#iDicts =
+pageCount = 1
+for iDicts in range(pageCount):
+#if iDicts:
     image_List = pdf.get_page_images(iDicts)
     numImageOnPage = len(image_List)
     pageDictonary =  buildEmptyResultDic()
