@@ -34,7 +34,7 @@ ROW_ONE_Y_MIN = 10
 ROW_THREE_Y_MIN = 50 
 CROP_PIXEL = (5,4)
 TABLE_SHIFT_START = (104,38)
-TABLE_SHIFT_END = (568,155)
+TABLE_SHIFT_END = (568,150)
 
 #Objects
 class HelpAsker:
@@ -132,6 +132,7 @@ def detectAndcorrectSkew(image,thresh):
 
 #Return a Mask that can be used to find Tables
 def makeTableMask(image):
+    print("Make Table Mask")
     #greyscale and thresh for cvOpen operations
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
@@ -149,7 +150,7 @@ def makeTableMask(image):
     vertical = np.copy(thresh)
     
     cols = horizontal.shape[1]
-    horizontal_size = math.ceil(cols / 20)
+    horizontal_size = math.ceil(cols / 50)
 
     # Create structure element for extracting horizontal lines through morphology operations
     horizontalStructure = cv2.getStructuringElement(cv2.MORPH_RECT, (horizontal_size, 1))
@@ -160,7 +161,7 @@ def makeTableMask(image):
 
     # Specify size on vertical axis
     rows = vertical.shape[0]
-    verticalsize = math.ceil(rows / 70)
+    verticalsize = math.ceil(rows / 50)
 
     # Create structure element for extracting vertical lines through morphology operations
     verticalStructure = cv2.getStructuringElement(cv2.MORPH_RECT, (1, verticalsize))
@@ -171,10 +172,21 @@ def makeTableMask(image):
 
     res = vertical + horizontal
 
-    return res, image
+    return res, thresh
+
+def confirmContourIsQuadrilateral(element):
+    hasFourSides = False
+    peri = cv2.arcLength(element, True)
+    approx = cv2.approxPolyDP(element, 0.02 * peri, True)
+    print()
+    if len(approx ==4):
+        hasFourSides = True
+
+    return hasFourSides
+
 
 def confirmBoxDimension(w,h,sizeRange):
-    isDateBox =False
+    isDateBox = False
     if w>sizeRange[0] and h>sizeRange[1] and w<sizeRange[2] and h<sizeRange[3]:
         isDateBox = True
     
@@ -187,14 +199,81 @@ def captureCell(img, areaBox):
     areaROI = img[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
     return areaROI
 
-def captureDataTable(img,mask,areBox):
+#Isolate and pre-Process the ROI representating the data table
+# @img = Master Image representing the whole page
+# @area box - provides dimensions of ROI
+def captureAndCleanDataTable(img,areBox):
     x, y, w, h = cv2.boundingRect(areBox)
+
     startPoint = (x+TABLE_SHIFT_START[0],y+TABLE_SHIFT_START[1])
     endPoint = (x+TABLE_SHIFT_END[0],y+TABLE_SHIFT_END[1])
 
+    #crop master image down to ROI
     tableROI = img[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
-    maskROI = mask[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
-    return tableROI, maskROI
+    
+    #creat a new mask for cropped image
+    maskROI,thresh = makeTableMask(tableROI)
+    
+    #Prevent Masking of cell contents / Only mask cell boarders
+
+    maskContours = cv2.findContours(maskROI, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
+
+    #Make background all white
+    imgH, imgW = maskROI.shape
+    startPoint = (0,0)
+    endPoint = (imgW,imgH)
+    cornerDownLeft = startPoint[0],endPoint[1]
+    cornerUpRight = endPoint[0],startPoint[1]
+    contoursFillWhite = np.array([startPoint, cornerDownLeft, endPoint, cornerUpRight])
+    cv2.fillPoly(maskROI, pts =[contoursFillWhite], color=(255,255,255))
+
+    #Place black squares on onto white background where data will be located
+    for element in maskContours:
+        x, y, w, h = cv2.boundingRect(element)
+        if confirmBoxDimension(w,h,DATA_CELL_SIZE_RANGE):
+            cornerUpLeft = x+CROP_PIXEL[0],y+CROP_PIXEL[0]
+            cornerDownLeft = x+CROP_PIXEL[0],y+h-CROP_PIXEL[1]
+            cornerDownRight = x+w-CROP_PIXEL[1],y+h-CROP_PIXEL[1]
+            cornerUpRight = x+w-CROP_PIXEL[1],y+CROP_PIXEL[0]
+            contoursFillBlack = np.array([cornerUpLeft, cornerDownLeft, cornerDownRight, cornerUpRight])
+            cv2.fillPoly(maskROI, pts =[contoursFillBlack], color=(0,0,0))
+
+    clean = thresh - maskROI
+    table = clean.copy()
+
+    #draw back in rows and columns
+    # white color in BGR
+    whiteLines = (255, 255, 255)
+    # Line thickness of 2 px
+    thickness = 1
+    #draw 2 Horizontal Lines
+    horizonalLineSpacing = math.ceil(imgH / 3)
+    print(horizonalLineSpacing)
+    print(imgH)
+    lineStartPoint =(0,horizonalLineSpacing)
+    lineEndPoint = (imgW,horizonalLineSpacing)
+    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
+
+    lineStartPoint = (0, horizonalLineSpacing + horizonalLineSpacing)
+    lineEndPoint = (imgW, horizonalLineSpacing + horizonalLineSpacing)
+    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
+    
+    #draw 3 Vertical Lines
+    verticalLineSpaceing = math.ceil(imgW / 4)
+    lineStartPoint = (verticalLineSpaceing,0)
+    lineEndPoint = (verticalLineSpaceing,imgH)
+    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
+    
+    lineStartPoint= (verticalLineSpaceing+verticalLineSpaceing,0)
+    lineEndPoint= (verticalLineSpaceing + verticalLineSpaceing,imgH)
+    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
+    
+    lineStartPoint =  (verticalLineSpaceing+verticalLineSpaceing+verticalLineSpaceing, 0)
+    lineEndPoint = (verticalLineSpaceing+verticalLineSpaceing+verticalLineSpaceing,imgH)
+    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
+   
+    table  = cv2.bitwise_not(table)
+    return tableROI, maskROI, table,clean
 
 def processImageToString(img,configString):
     returnString ="NaN"
@@ -284,12 +363,15 @@ def processPdfPage(pageImg):
     # Line thickness of 2 px
     thickness = 4
 
+    #Step 1 Trim Headers to isolate scanned image
     trimmed = trimHeaderFooter(pageImg)
 
-    res,pageImg = makeTableMask(trimmed)
-
+    #step 2 make a Mask to find countours/bounding rectanges of Regions of interest
+    imgMask = makeTableMask(trimmed)[0]
+ 
     #find Date Box and Main Data Tabel
-    contourMain = cv2.findContours(res, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
+    contourMain = cv2.findContours(imgMask, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
+    print("Contures",len(contourMain))
     desiredBoxes = []
     boxesIndex =0
     dateBoxIndexList =[]
@@ -316,7 +398,9 @@ def processPdfPage(pageImg):
     if(foundBoxes != 2):
         # Fix this issues when Dealing with 2020 Data
         if foundBoxes ==0:
-            cv2.imshow("Skew?", pageImg)
+            print("No data found on page")
+            cv2.imshow("NO Data Found", pageImg)
+            cv2.imShow("Failed Mask", res)
             cv2.waitKey(0)
             cv2.destroyAllWindows()
 
@@ -332,28 +416,50 @@ def processPdfPage(pageImg):
         
         print("Huston, We have a Problem -", foundBoxes ,"Boxes")
     
+    #2017-2020 data has 2 table boxes
     dateBox = desiredBoxes[1]
     tableBox = desiredBoxes[0]
 
-    dateROI = captureCell(pageImg,dateBox)
+    dateROI = captureCell(trimmed,dateBox)
     date_Value = processImageToString(dateROI,TESSERACT_DATE_CONFIG)
 
-    dataTableROI,dataTableROIMask = captureDataTable(pageImg,res,tableBox)
+    dataTableROI,dataTableROIMask,DataTable,cleanData = captureAndCleanDataTable(trimmed,tableBox)
+    cv2.imshow("DataTableROI",dataTableROI)
+    cv2.imshow("Data table Mask",dataTableROIMask)
+    cv2.imshow("pre-processed data",DataTable)
+    cv2.imshow("clean data",cleanData)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
     #Grab Data from the Tabel, <2020 version
     dataBoxMetro = []
     dataBoxIft = []
     dataBoxSubR = []
-    countoursData = cv2.findContours(dataTableROIMask, cv2.RETR_EXTERNAL ,cv2.CHAIN_APPROX_SIMPLE)[0]
+    #countoursData = cv2.findContours(dataTableROIMask, cv2.RETR_LIST ,cv2.CHAIN_APPROX_SIMPLE)[0]
+    countoursData = cv2.findContours(DataTable, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
+
+    color = (255, 0, 0)
     for element in countoursData:
         x, y, w, h = cv2.boundingRect(element)
-        if confirmBoxDimension(w,h,DATA_CELL_SIZE_RANGE):
+        startPoint = (x,y)
+        endPoint = (x+w,y+h)
+        failROI = cv2.rectangle(DataTable, startPoint, endPoint, color, thickness)
+        print(x,y,w,h)
+        cv2.imshow("Broken",failROI)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+
+        isCellSizeCorect = confirmBoxDimension(w,h,DATA_CELL_SIZE_RANGE)
+        
+        if isCellSizeCorect:
             if(y<ROW_ONE_Y_MIN):
                 dataBoxMetro.append(element)
             if(y> ROW_ONE_Y_MIN and y<ROW_THREE_Y_MIN):
                 dataBoxIft.append(element)
             if y>ROW_THREE_Y_MIN:
-              dataBoxSubR.append(element)  
+                dataBoxSubR.append(element)  
+
 
     #sort the output
     dataOutput = []
@@ -362,12 +468,21 @@ def processPdfPage(pageImg):
     dataBoxIft.sort(key=sortOnX)
     dataOutput = dataOutput+dataBoxIft
     dataBoxSubR.sort(key=sortOnX)
-    dataOutput = dataOutput+dataBoxSubR    
+    dataOutput = dataOutput+dataBoxSubR
+
 
     #Process and Store Page's Data
     metroDict = build3PartDict()
     iftDict = build4PartDict()
     subRDict = build3PartDict()
+
+    #verify we have correct amount of data
+    foundCells = len(dataOutput)
+    if foundCells !=10:
+        print("error getting table data - found",foundCells,"cells")
+        junkDict = buildResultDict(date_Value,metroDict,iftDict,subRDict)
+        return junkDict
+
     tableIndex =0
     for element in dataOutput:
         cell = captureCell(dataTableROI,element)
@@ -463,11 +578,11 @@ print('Document Pages -',pageCount)
 
 dictList =[]
 #debug value
-#iDicts = # start processing at specific page
-#pageCount = 20 # only process X amount of records
+iDicts = 1 #start processing at specific page
+#pageCount = 89 # only process X amount of records
 startTime = time.time()
-for iDicts in range(pageCount):
-#if iDicts:
+#for iDicts in range(pageCount):
+if iDicts:
     image_List = pdf.get_page_images(iDicts)
     numImageOnPage = len(image_List)
     pageDictonary =  buildEmptyResultDic()
@@ -478,11 +593,11 @@ for iDicts in range(pageCount):
         pix = fitz.Pixmap(pdf,xref)
         pageImageCV2 = pix2np(pix)
         #Process Image and extact text
-        try:
-            pageDictonary = processPdfPage(pageImageCV2)
-        except Exception as e:
-            print("My Code explode!")
-            print(e)
+        #try:
+        pageDictonary = processPdfPage(pageImageCV2)
+        #except Exception as e:
+        #    print("My Code explode!")
+        #    print(e)
 
         dictList.append(pageDictonary)
         print("completed page", iDicts)
