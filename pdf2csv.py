@@ -7,20 +7,21 @@ import pytesseract
 from pytesseract import Output
 import time
 from datetime import timedelta
+import pandas as pd
 
 # Path to the location of the Tesseract-OCR executable/cmd
 pytesseract.pytesseract.tesseract_cmd =r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 #CONSTANTS
 DATE ='Date'
-METRO_DICT = 'Metro'
-IFT_DICT = 'IFT'
-SUBR_DICT ='SubR'
+METRO = 'Metro'
+IFT = 'IFT'
+SUBURBAN ='Suburban'
 SCHEDULED = 'Scheduled'
 STAFFED = 'Staffed'
 BLS ='BLS'
 TANGO = 'Tango'
-TESSERACT_DATE_CONFIG = r'--psm 7 -c tessedit_char_whitelist=/0123456789'
+TESSERACT_DATE_CONFIG = r'--psm 6'
 TESSERACT_NUMBER_CONFIG = r'--psm 7 -c tessedit_char_whitelist=0123456789'
 CSV_HEADEERS = "Page, Date, Metro Scheduled, Metro Staffed, Metro BLS, Sub/Rural Scehduled, Sub/Rural Staffed, Sub/Rural BLS, IFT Scheduled, IFT Staffed, IFT BLS, IFT Tango\n"
 TRIM_HEIGHT = 120
@@ -34,7 +35,7 @@ MASK_CELL_SIZE_RANGE =(70, 20, 135, 30) #min width, min height, max width, max h
 MIN_CELL_WIDTH = 15
 ROW_ONE_Y_MIN = 10
 ROW_THREE_Y_MIN = 50 
-CROP_PIXEL = (5,4)
+CROP_PIXEL = (6,6)
 TABLE_SHIFT_START = (104,38)
 TABLE_SHIFT_END = (568,150)
 
@@ -42,43 +43,75 @@ TABLE_SHIFT_END = (568,150)
 def sortOnX(elm):
     x = elm['x']
     return x
+def sortAreaOnX(elm):
+    x =cv2.boundingRect(elm)[0]
+    return x
+def sortAreaOnY(elm):
+    y =cv2.boundingRect(elm)[1]
+    return y
 
 class TableDataContainer:
-    def __init__(self):
-        self.ROW001 = []
-        self.ROW002 = []
-        self.ROW003 = []
+    def __init__(self,version = 0):
+        self.dataVersion = version
+        self.Datalist = []
+        self.dataFrame = None
+
     
-    def addData(self,cellDict):
-        y = cellDict['y']
-        if(y<ROW_ONE_Y_MIN):
-            self.ROW001.append(cellDict)
-        if(y > ROW_ONE_Y_MIN and y < ROW_THREE_Y_MIN):
-            self.ROW002.append(cellDict)
-        if y >ROW_THREE_Y_MIN:
-            self.ROW003.append(cellDict) 
+    def addTableData(self,cellDict):
+        self.Datalist.append(cellDict)
 
-    def sortData(self):
-        self.ROW001.sort(key=sortOnX)
-        self.ROW002.sort(key=sortOnX)
-        self.ROW003.sort(key=sortOnX)
-
-    def toCSVstring(self,strinVer=0):
-        csvString = ""
-        for elem1 in self.ROW001:
-            csvString = csvString + elem1['data'] + ", "
-        for elem2 in self.ROW002:
-            csvString = csvString + elem2['data'] + ", "
-        for elem3 in self.ROW003:
-            csvString = csvString + elem3['data'] + ", "
+    def sortTableData(self):
+        seenX = set()
+        seenY = set()
+        for element in self.Datalist:
+           seenX.add(element[0])
+           seenY.add(element[1])
         
-        if len(csvString)>2:
-            csvString = csvString[:-2]
-            csvString = csvString +'\n'
+        cols = list(seenX)
+        cols.sort()
+        rows = list(seenY)
+        rows.sort()
+        emptyDF = pd.DataFrame(0,rows,cols)     
+        for element in self.Datalist:
+            emptyDF.at[element[1],element[0]] = element[2]
+
+        emptyDF.rename(columns={cols[0]:SCHEDULED, cols[1]:STAFFED, cols[2]:BLS, cols[3]:TANGO},inplace=True)
+        if theWorld.dataVersion == 0:
+            emptyDF.rename(index = {rows[0]:METRO, rows[1]:IFT, rows[2]:SUBURBAN},inplace=True)
+        if theWorld.dataVersion == 1:
+             emptyDF.rename(index = {rows[0]:METRO, rows[1]:SUBURBAN, rows[2]:IFT},inplace=True)
+            
+        self.dataFrame = emptyDF
+
+    def toCSVstring(self):
+        csvString = ""
+        #Metro / IFT / Suburban-Rural
+        metroScheduledString = self.dataFrame.at[METRO,SCHEDULED]
+        metroStaffedString = self.dataFrame.at[METRO,STAFFED]
+        metroBLSString = self.dataFrame.at[METRO,BLS]
+        metroString = metroScheduledString + ", " + metroStaffedString + ", " + metroBLSString + ", "
+        
+        iftScheduledString = self.dataFrame.at[IFT,SCHEDULED]
+        iftStaffedString = self.dataFrame.at[IFT,STAFFED]
+        iftBLSString = self.dataFrame.at[IFT,BLS]
+        iftTangoString = self.dataFrame.at[IFT,TANGO]
+        iftString = iftScheduledString + ", " + iftStaffedString + ", " + iftBLSString + ", " + iftTangoString + ", "
+
+        subrScheduleString = self.dataFrame.at[SUBURBAN,SCHEDULED]
+        subrStaffedString = self.dataFrame.at[SUBURBAN,STAFFED]
+        subrBLSString = self.dataFrame.at[SUBURBAN,BLS]
+        subrString = subrScheduleString + ", " + subrStaffedString + ", " + subrBLSString
+
+        csvString = metroString + iftString + subrString + "\n"
 
         return csvString
-
-
+    
+    def fillBrokenContainer(self):
+        cols = [SCHEDULED,STAFFED,BLS,TANGO]
+        rows = [METRO,IFT,SUBURBAN]
+        self.dataFrame = pd.DataFrame("Nan",rows,cols)
+        
+        
 class PageData:
     def __init__(self):
         self.dateString = ""
@@ -94,14 +127,26 @@ class PageData:
             outString = outString +", " + self.thisTableDataContainer.toCSVstring()
         return outString
 
-
 class StateAndMem:
     #class to manage some global data
     #want to be able to print recoreded data if things go catastrophicly awry
     def __init__(self):
         self.asked = 0
         self.pageDataArray =[]
+        self.dataVersion =0
+        self.versionSwapIndex =-1
+        self.willSwap = False
     
+    def defineWhereSwap(self,swapIndex):
+        self.willSwap = True
+        self.versionSwapIndex = swapIndex
+        
+    def swapDataVersion(self, pageIndex):
+        if self.willSwap:
+            if pageIndex == self.versionSwapIndex:
+                self.dataVersion =1
+                print("The World Swapped to Data Version 1")
+
     def askforhelp(self):
         self.asked = self.asked +1
 
@@ -113,34 +158,9 @@ class StateAndMem:
         self.pageDataArray.append(pageData)
     
     def getData(self):
-        return self.pageDataArray
+        return self.pageDataArray 
 
 theWorld = StateAndMem()
-
-def build3PartDict(scheduled="NaN",staffed="NaN",bls="Nan"):
-    return{SCHEDULED:scheduled,STAFFED:staffed,BLS:bls}
-
-def build4PartDict(scheduled="NaN",staffed="NaN",bls="Nan",tango="Nan"):
-    return{SCHEDULED:scheduled,STAFFED:staffed,BLS:bls,TANGO:tango}
-def buildEmptyResultDic():
-    metroDict = build3PartDict()
-    iftDict = build4PartDict()
-    subrDict = build3PartDict()
-    return{DATE:"NaN,",METRO_DICT:metroDict,IFT_DICT:iftDict,SUBR_DICT:subrDict}
-
-def buildResultDict(date,metroDict,iftDict,subRDict):
-      return{DATE:date,METRO_DICT:metroDict,IFT_DICT:iftDict,SUBR_DICT:subRDict}
-
-def editDictKeybyIndex(dict,index,value):
-    try:   
-        match index:
-            case 0: dict[SCHEDULED] = value
-            case 1: dict[STAFFED] = value
-            case 2: dict[BLS] = value
-            case 3: dict[TANGO]=value
-    except KeyError as e:
-        print("Edit Dict Key by Index - Invalid Key",e)
-
 
 #Converts Pix to np
 def pix2np(pix):
@@ -148,79 +168,43 @@ def pix2np(pix):
     im = np.ascontiguousarray(im[..., [2, 1, 0]])  # rgb to bgr
     return im
 
+#remove garbage header and footer - less data to process
 def trimHeaderFooter(image):
-    #remove garbage header and footer data
     w,h,d = image.shape
     startPoint = (0,0+TRIM_HEIGHT)
     endPoint = (w,h-TRIM_HEIGHT)
     trim = image[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
     return trim
 
-def detectAndcorrectSkew(image,thresh):
-    # grab the (x, y) coordinates of all pixel values that
-    # are greater than zero, then use these coordinates to
-    # compute a rotated bounding box that contains all
-    # coordinates
-    correctedAngle = False
-    coords = np.column_stack(np.where(thresh > 0))
-    angle = cv2.minAreaRect(coords)[-1]
-
-    # the `cv2.minAreaRect` function returns values in the
-    # range [-90, 0); as the rectangle rotates clockwise the
-    # returned angle trends to 0 -- in this special case we
-    # need to add 90 degrees to the angle
-  
-    #pull back to square - assumes roated clockwise
-    if angle !=0:
-        angle = 90 - angle
-        correctedAngle = True
+def detectAndcorrectSkew(tableContour,skewedPage):
+    
+    #Testing the the squarness of the Table
+    rect = cv2.minAreaRect(tableContour)
+    needsCorrectedAngle = False
+    rotated = None
+    rectAngle = rect[2]
+    if rectAngle != 0 and rectAngle !=90:
+        needsCorrectedAngle = True
         # rotate the image to deskew it
-        ( h, w) = image.shape[:2]
+        ( h, w) = skewedPage.shape[:2]
         center = (w // 2, h // 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        image = cv2.warpAffine(image, M, (w, h),flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        M = cv2.getRotationMatrix2D(center, rectAngle, 1.0)
+        rotated = cv2.warpAffine(skewedPage, M, (w, h),flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     
-        #Debug drawing code
-        #rotated = np.copy(image)
-        # draw the correction angle on the image so we can validate it
-        #cv2.putText(rotated, "Angle: {:.2f} degrees".format(angle),(10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    
-        # show the output image
-        #print("[INFO] angle: {:.3f}".format(angle))
-        #cv2.imshow("Input", image)
-        #cv2.imshow("Rotated", rotated)
-        #cv2.waitKey(0)
-    
-    #olde code for counterclockwise? roatations
-    #if angle < -45:
-    #    angle = -(90 + angle)
-    # otherwise, just take the inverse of the angle to make
-    # it positive
-    #else:
-    #    angle = -angle 
-    
-    return correctedAngle, image
+    return needsCorrectedAngle, rotated
 
 #Return Masks that can be used to find Tables
 def makeTableMask(image):
     #greyscale and thresh for cvOpen operations
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-    
-    #check for scew and correct it
-    didCorrectAngle,rotated = detectAndcorrectSkew(image,thresh)
-    if didCorrectAngle:
-        #refresh the Thresh
-        image = rotated
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
 
     # Create the images that will use to extract the horizontal and vertical lines
     horizontal = np.copy(thresh)
     vertical = np.copy(thresh)
     
     cols = horizontal.shape[1]
-    horizontal_size = math.ceil(cols / 50)
+    horizontal_size = math.ceil(cols / 20)
 
     # Create structure element for extracting horizontal lines through morphology operations
     horizontalStructure = cv2.getStructuringElement(cv2.MORPH_RECT, (horizontal_size, 1))
@@ -231,7 +215,7 @@ def makeTableMask(image):
 
     # Specify size on vertical axis
     rows = vertical.shape[0]
-    verticalsize = math.ceil(rows / 50)
+    verticalsize = math.ceil(rows / 10)
 
     # Create structure element for extracting vertical lines through morphology operations
     verticalStructure = cv2.getStructuringElement(cv2.MORPH_RECT, (1, verticalsize))
@@ -244,48 +228,65 @@ def makeTableMask(image):
 
     return res, thresh
 
-def confirmContourIsQuadrilateral(element):
-    hasFourSides = False
-    peri = cv2.arcLength(element, True)
-    approx = cv2.approxPolyDP(element, 0.02 * peri, True)
-    print()
-    if len(approx ==4):
-        hasFourSides = True
+#All rows are the same size, just need to know how many are in table
+def countTableRows(tableMesh):
+    rowsArray = []
+    hImg = tableMesh.shape[0]
+    startPoint =(0,0)
+    endPoint = (100,hImg)
+    whiteBoarder = (255,255,255)
+    thickness = 10
+    firstColumnOnlyimg = np.copy(tableMesh[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]])
+    cv2.rectangle(firstColumnOnlyimg,startPoint,endPoint,whiteBoarder,thickness)
+    rowContours = cv2.findContours(firstColumnOnlyimg, cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)[0]
+    for elements in rowContours:
+        x,y,w,h = cv2.boundingRect(elements)
+        if h<hImg:
+            rowsArray.append(elements)
 
-    return hasFourSides
 
-def confirmBoxDimension(w,h,sizeRange):
-    isDateBox = False
-    if w>sizeRange[0] and h>sizeRange[1] and w<sizeRange[2] and h<sizeRange[3]:
-        isDateBox = True
-    
-    return isDateBox
+    rowsArray.sort(key=sortAreaOnY)
+    return rowsArray
 
-def captureCell(img, areaBox):
-    x, y, w, h = cv2.boundingRect(areaBox)
-    startPoint = (x+CROP_PIXEL[0],y+CROP_PIXEL[0])
-    endPoint = (x+w-CROP_PIXEL[1],y+h-CROP_PIXEL[1])
-    areaROI = img[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
-    return areaROI
+#each column has varying lenght, capture the area for each relevent column
+def countTableColumns(tableMesh):
+    colsArray = []
+    wMesh = tableMesh.shape[1]
+    startPoint =(0,0)
+    endPoint = (wMesh,40)
+    whiteBoarder = (255,255,255)
+    thickness = 10
+    topRowOnlyimg = np.copy(tableMesh[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]])
+    cv2.rectangle(topRowOnlyimg,startPoint,endPoint,whiteBoarder,thickness)
+    columnContours = cv2.findContours(topRowOnlyimg, cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)[0]
+    midpoint = math.ceil(wMesh/2)
+    #only interested in cells left of midline / ignore the others
+    for element in columnContours:
+        x,y,w,h = cv2.boundingRect(element)
+        if x< midpoint-5 and w<wMesh:
+            colsArray.append(element)
+
+
+    colsArray.sort(key=sortAreaOnX)
+    return colsArray
 
 #Isolate and pre-Process the ROI representating the data table
 # @img = Master Image representing the whole page
 # @area box - provides dimensions of ROI
-def captureAndCleanDataTable(img,areBox):
-    x, y, w, h = cv2.boundingRect(areBox)
-    startPoint = (x+TABLE_SHIFT_START[0],y+TABLE_SHIFT_START[1])
-    endPoint = (x+TABLE_SHIFT_END[0],y+TABLE_SHIFT_END[1])
+def captureAndCleanDataTable(pageImage,areaBox):
+    #1) Crop working aread down to Table Range of Interest
+    x, y, w, h = cv2.boundingRect(areaBox)
+    startPoint = (x,y)
+    endPoint = (x +w,y+h)
+    tableROI = pageImage[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
 
-    #crop master image down to ROI
-    tableROI = img[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
-    
-    #creat a new mask for cropped image
+    #creat a new mask for cropped image - Table ROI
     maskROI,thresh = makeTableMask(tableROI)
-    
-    #Prevent Masking of cell contents / Only mask cell boarders
-    maskContours = cv2.findContours(maskROI, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
 
-    #Make background all white
+    rows = countTableRows(maskROI)
+    cols = countTableColumns(maskROI)
+
+    #Make Mask background all white
     imgH, imgW = maskROI.shape
     startPoint = (0,0)
     endPoint = (imgW,imgH)
@@ -294,139 +295,68 @@ def captureAndCleanDataTable(img,areBox):
     contoursFillWhite = np.array([startPoint, cornerDownLeft, endPoint, cornerUpRight])
     cv2.fillPoly(maskROI, pts =[contoursFillWhite], color=(255,255,255))
 
-    #Place black squares on onto white background where data will be located
-    for element in maskContours:
-        x, y, w, h = cv2.boundingRect(element)
-        if confirmBoxDimension(w,h,DATA_CELL_SIZE_RANGE):
-            cornerUpLeft = x+CROP_PIXEL[0],y+CROP_PIXEL[0]
-            cornerDownLeft = x+CROP_PIXEL[0],y+h-CROP_PIXEL[1]
-            cornerDownRight = x+w-CROP_PIXEL[1],y+h-CROP_PIXEL[1]
-            cornerUpRight = x+w-CROP_PIXEL[1],y+CROP_PIXEL[0]
+    #place black cells on white background
+    colIndex = 1 #skip row headers, only interested in next 4 columns 
+    while colIndex <5:
+        rowIndex = 1 #skip column headers
+        colX, colY, colW, colH = cv2.boundingRect(cols[colIndex])
+        while rowIndex < 4:
+            #only interested in first 3 rows after headers
+            rowX,rowY,rowW,rowH = cv2.boundingRect(rows[rowIndex])
+            cornerUpLeft = colX+CROP_PIXEL[0],rowY+CROP_PIXEL[0]
+            cornerDownLeft = colX+CROP_PIXEL[0],rowY+rowH-CROP_PIXEL[1]
+            cornerDownRight = colX+colW-CROP_PIXEL[1],rowY+rowH-CROP_PIXEL[1]
+            cornerUpRight = colX+colW-CROP_PIXEL[1],rowY+CROP_PIXEL[0]
             contoursFillBlack = np.array([cornerUpLeft, cornerDownLeft, cornerDownRight, cornerUpRight])
             cv2.fillPoly(maskROI, pts =[contoursFillBlack], color=(0,0,0))
+            rowIndex = rowIndex+1 #increment
+        colIndex = colIndex+1
 
-    clean = thresh - maskROI
-    table = clean.copy()
-
-    #draw back in rows and columns
-    # white color in BGR
-    whiteLines = (255, 255, 255)
-    # Line thickness of 2 px
-    thickness = 1
-    #draw 2 Horizontal Lines
-    horizonalLineSpacing = math.ceil(imgH / 3)
-    lineStartPoint =(0,horizonalLineSpacing)
-    lineEndPoint = (imgW,horizonalLineSpacing)
-    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
-
-    lineStartPoint = (0, horizonalLineSpacing + horizonalLineSpacing)
-    lineEndPoint = (imgW, horizonalLineSpacing + horizonalLineSpacing)
-    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
-    
-    #draw 3 Vertical Lines
-    verticalLineSpaceing = math.ceil(imgW / 4)
-    lineStartPoint = (verticalLineSpaceing,0)
-    lineEndPoint = (verticalLineSpaceing,imgH)
-    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
-    
-    lineStartPoint= (verticalLineSpaceing+verticalLineSpaceing,0)
-    lineEndPoint= (verticalLineSpaceing + verticalLineSpaceing,imgH)
-    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
-    
-    lineStartPoint =  (verticalLineSpaceing+verticalLineSpaceing+verticalLineSpaceing, 0)
-    lineEndPoint = (verticalLineSpaceing+verticalLineSpaceing+verticalLineSpaceing,imgH)
-    cv2.line(table,lineStartPoint,lineEndPoint,whiteLines,thickness)
-   
-    #Find conntours works with black background / white objects
-    table  = cv2.bitwise_not(table)
+    #create conntours works with black background / white objects
     maskROI = cv2.bitwise_not(maskROI)
-    #Table ROI - image taken striaght from page
-    #Mask ROI - mask to isolate cells
-    #clean - image with just numbers
-    #table - Grid lines drawn on clean
-    return tableROI, maskROI, clean, table
+    cv2.imshow("Cell Masks", maskROI)
+    cv2.imshow("table ROI",tableROI)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    return tableROI,maskROI
 
 # for a sanitized Data Table
 # Pro - might be faster
 # Con - unable to ask a human for help
 def proccessImageToData(img,configString):
     #Pass in clean image / is already black & white
-
     processedImg = processImageAlgorithmDefault(img)
-   # cv2.imshow("Original Window",img)
-   # cv2.imshow("Pocessed IMage for Image to data",processedImg)
-   # cv2.waitKey(0)
-   # cv2.destroyAllWindows()
     data = pytesseract.image_to_data(processedImg,config=configString,output_type=Output.DICT)
-
-    #iterate over returned dictionary and create a list for each row
-    rowOneList =[]
-    rowTwoList = []
-    rowThreeList = []
-    fillNumber =0
-    n_boxes = len(data['text'])
-    for i in range(n_boxes):
-        readText = data['text'][i]
-        textLength = len(readText)
-
-        if fillNumber ==0 and textLength >0:
-            #found first block of text in dictionary
-            fillNumber = fillNumber +1
-        
-        if textLength == 0 and fillNumber>0:
-            #found a space after a block of text, move to next row
-            fillNumber = fillNumber +1
-
-        if textLength >0:
-            #put found text in appropriate row list
-            match fillNumber:
-                case 1: 
-                    rowOneList.append(readText)
-                case 2: 
-                    rowTwoList.append(readText)
-                case 3: 
-                    rowThreeList.append(readText)
-        
-    
-    returnList = []
-    returnList.append(rowOneList)
-    returnList.append(rowTwoList)
-    returnList.append(rowThreeList)
-    return returnList
+    return data 
 
 #for a data Table, iterate over table and examine each cell
 #for each cell extarct a string and store it 
 #return a storage object containing all the data - sorted
 def processImagetoString(imgDataTable,imgDataMask):
   
-    imageTableData = TableDataContainer()
+    imageTableData = TableDataContainer(theWorld.dataVersion)
     countoursData = cv2.findContours(imgDataMask, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
     for element in countoursData:
         x, y, w, h = cv2.boundingRect(element)
-        isCellSizeCorect = confirmBoxDimension(w,h,MASK_CELL_SIZE_RANGE)
         startPoint = (x,y)
         endPoint = (x+w,y+h)
 
-        if isCellSizeCorect:
-            # crop to isolates cell
-            cellImg = imgDataTable[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
-            #cv2.imshow("Cell Image",cellImg)
-            #cv2.waitKey(0)
-            #cv2.destroyAllWindows()
+        # crop to isolates cell
+        cellImg = imgDataTable[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
 
-            #OCR to read individual Cell
-            cellString = processCellToString(cellImg,TESSERACT_NUMBER_CONFIG)
-            #print("String Found = ",x,y,cellString)
-            if len(cellString) ==0 :
-                #unable to OCR the cell, ask a human
-                cellString = askAHuman(cellImg)
+        #OCR to read individual Cell
+        cellString = processCellToString(cellImg,TESSERACT_NUMBER_CONFIG)
+        if len(cellString) ==0 :
+            #unable to OCR the cell, ask a human
+            cellString = askAHuman(cellImg)
             
-            #Build a dict to hold the data & add data to container object
-            cellDict = {'x':x,'y':y,'data':cellString}
-            imageTableData.addData(cellDict)
+        #Build a dict to hold the data & add data to container object
+        cellTuple = (x,y,cellString)
+        imageTableData.addTableData(cellTuple)
 
     #finished capturing all the data, sort it
-    imageTableData.sortData()
+    imageTableData.sortTableData()
     return imageTableData
 
 #for an individual ROI/Cell
@@ -435,9 +365,9 @@ def processCellToString(img,configString):
     returnString ="NaN"
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blackandwhite = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)[1]
+
     if np.mean(blackandwhite) == 255:
-        print("Cell Empty - Returning 0")
-        returnString="0"
+        returnString = "0"
         return returnString
     
     processedImg = processImageAlgorithmDefault(gray)
@@ -501,89 +431,94 @@ def askAHuman(failImg):
 def addPageDataToMem(pageData):
     theWorld.appendData(pageData)
 
+def captureAndCleanDate(pageImg,tableElement):
+    date_String = "01/01/1901"
+    x, y, w, h = cv2.boundingRect(tableElement)
+    targetWidth = math.ceil(w/2)
+    targetHeight = 0
+    if theWorld.dataVersion ==0:
+        targetHeight = h
+    else:
+        targetHeight = math.ceil(h/2) 
+
+    startPoint = (x,y-targetHeight)
+    endPoint = (targetWidth,y)
+    dateRegion = pageImg[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
+
+    gray = cv2.cvtColor(dateRegion, cv2.COLOR_BGR2GRAY)
+    blackandwhite = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)[1]
+    imageDataDict = proccessImageToData(blackandwhite,TESSERACT_DATE_CONFIG)
+    n_boxes = len(imageDataDict['text'])
+    foundDateKey = False
+    for i in range(n_boxes):
+        if int(imageDataDict['conf'][i]) > 60: #% confidence in identification
+            testword = imageDataDict['text'][i]
+            if foundDateKey:
+                #found date keyword previous iteration, this iteration pull the date
+                date_String = testword
+                break
+            if "Date" in testword:
+                foundDateKey = True
+    return date_String
+
+def findTableDimensions(pageMask):
+    fountElement = False
+    pageContours = cv2.findContours(pageMask, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
+    widestW = 0
+    widestElement = None
+    for element in pageContours:
+        x, y, w, h = cv2.boundingRect(element)
+         #Find the widest table contour on the page
+        if w > widestW:
+            widestW = w
+            widestElement = element
+            fountElement = True
+ 
+    #return true/false, and the widest element found
+    return fountElement, widestElement
 
 def processPdfPage(pageImg):
-    #Step 1 Trim Headers to isolate scanned image
-    trimmed = trimHeaderFooter(pageImg)
-
-    #step 2 make a Mask to find countours/bounding rectanges for Regions of interest on page
-    imgMask,res = makeTableMask(trimmed)
-
-    #find Date Box and Main Data Tabel
-    contourMain = cv2.findContours(imgMask, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
-    desiredBoxes = []
-    boxesIndex =0
-    dateBoxIndexList =[]
-    tableBoxIndexList = []
-    foundBoxes =0
-    for element in contourMain:
-        x, y, w, h = cv2.boundingRect(element)
-        if x < X_THRESHOULD:
-            #Want Boxes on left side of page
-            if confirmBoxDimension(w,h,DATE_BOX_SIZE_RANGE):
-                #grab the Date Box
-                desiredBoxes.append(element)
-                dateBoxIndexList.append(tableBoxIndex)
-                foundBoxes=foundBoxes+1
-        
-            if confirmBoxDimension(w,h,DATA_TABLE_SIZE_RANGE):
-                #grab the Data Table
-                desiredBoxes.append(element)
-                tableBoxIndexList.append(tableBoxIndex)
-                foundBoxes=foundBoxes+1
-
-        tableBoxIndex = boxesIndex+1
-    
-    if(foundBoxes != 2):
-        # Fix this issues when Dealing with 2020 Data
-        #Debug Code
-        # Blue color in BGR
-        color = (255, 0, 0)
-        # Line thickness of 2 px
-        thickness = 4
-        if foundBoxes ==0:
-            print("No data found on page")
-            cv2.imshow("NO Data Found", pageImg)
-            cv2.imshow("Failed Mask", res)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-
-        for element in desiredBoxes:
-            x, y, w, h = cv2.boundingRect(element)
-            startPoint = (x,y)
-            endPoint = (x+w,y+h)
-            failROI = cv2.rectangle(pageImg, startPoint, endPoint, color, thickness)
-            print(x,y,w,h)
-            cv2.imshow("Broken",failROI)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-        
-        print("Huston, We have a Problem -", foundBoxes ,"Boxes")
-    
-    #2017-2020 data has 2 table boxes
-    dateBox = desiredBoxes[1]
-    tableBox = desiredBoxes[0]
-
-    dateROI = captureCell(trimmed,dateBox)
-    date_Value = processCellToString(dateROI,TESSERACT_DATE_CONFIG)
-
-    dataTableROI,dataTableROIMask,cleanData,cleanTabled = captureAndCleanDataTable(trimmed,tableBox)
-
-    
-    #Algorithm 1) Grab Data from the Table as a whole
-  
-    #cleanDataStringConfig = r'--psm 6 -c tessedit_char_whitelist=0123456789'
-    #dataList = proccessImageToData(cleanData,cleanDataStringConfig)
-    #addPageDataToMem(dataList,date_Value)
-    #not very accurate
-    
-    #Algorithm 2) Grab Data from the Tabel, focusing Cell ROI by Cell ROI, <2020 version
     thisPageData = PageData()
+    thisdataContainer = None
+    #step 1 create a Mask to find countour rectanges for possible Regions of interest on page
+    pageMask,res = makeTableMask(pageImg)
+
+    #step 2 find the Region of the Table using the mask
+    didFindTable,tableElement = findTableDimensions(pageMask)
+    if didFindTable == False :
+        print("Found no Contures on page")
+        thisdataContainer = TableDataContainer(theWorld.dataVersion)
+        thisdataContainer.fillBrokenContainer()
+        thisPageData.addData("01/01/1901",thisdataContainer)
+        addPageDataToMem(thisPageData)
+        return
+
+    #Check for Skew - skew most detectable when inspecting the table
+    isSkewed,roatated =  detectAndcorrectSkew(tableElement,pageImg)
+
+    if isSkewed:
+        #fixed skew so lets start all over
+        pageImg = roatated
+        pageMask = makeTableMask(pageImg)[0]
+        didFindTable,tableElement = findTableDimensions(pageMask)
+        if didFindTable == False :
+            print("Lost Cotures when correcting skew")
+            thisdataContainer = TableDataContainer(theWorld.dataVersion)
+            thisdataContainer.fillBrokenContainer()
+            thisPageData.addData("01/01/1901",thisdataContainer)
+            addPageDataToMem(thisPageData)
+            return
+
+    #step 5 create a mask which allows the isolation of individual cells
+    dataTableROI,dataTableROIMask = captureAndCleanDataTable(pageImg,tableElement)
+
+    #step 6 date is located just above table box
+    date_Value = captureAndCleanDate(pageImg,tableElement)
+
     thisdataContainer = processImagetoString(dataTableROI,dataTableROIMask)
     thisPageData.addData(date_Value,thisdataContainer)
     addPageDataToMem(thisPageData)
     return
-
     
 # write to file as CSV.txt
 def writeOutCSVFile(dictDataArray,filepath):
@@ -596,50 +531,76 @@ def writeOutCSVFile(dictDataArray,filepath):
         pageIndex = pageIndex+1
 
     outputFile.close()
+
+#
+def processData(readPath):
+    print("Processing Data")
+    pdf = fitz.open(readPath)
+    pageCount = pdf.page_count
+    print('Document Pages -',pageCount)
+    #debug values
+    iDicts = 0 #start processing at specific page
+    pageCount = 20 # only process X amount of records
+
+    for iDicts in range(pageCount):
+    #if iDicts:
+        theWorld.swapDataVersion(iDicts)
+        
+        image_List = pdf.get_page_images(iDicts)
+        numImageOnPage = len(image_List)
+        if(numImageOnPage ==1):
+            #get the Image that represents the Page
+            img = image_List[0]
+            xref = img[0]
+            pix = fitz.Pixmap(pdf,xref)
+            pageImageCV2 = pix2np(pix)
+            #Process Image and extact text
+            #try:
+            processPdfPage(pageImageCV2)
+            #except Exception as e:
+            #    print("My Code explode!")
+            #    print(e)
+            print("completed page", iDicts)
+
 ###################################################################################
 # MAIN SCRIPT
 print('pdf2csv')
-filepath = ""
-path2017FileRead = "2022-G-203 (2017).pdf"
-path2017FileWrite = "2017DataCSV.txt"
-#TODO - add argument parsing
-filepath = path2017FileRead
-outputFilePath = path2017FileWrite
-pdf = fitz.open(filepath)
-pageCount = pdf.page_count
-print('Document Pages -',pageCount)
+readfilepath = ""
+writeFilePath = "default.txt"
 
+#2017
+readPath2017 = "2022-G-203 (2017).pdf"
+writePath2017 = "2017DataCSV.txt"
+#Process 2018
+readPath2018 = "2022-G-203 (2018).pdf"
+writePath2018 = "2018DataCSV.txt"
+#Process 2019
+readPath2019 = "2022-G-203 (2019).pdf"
+writePath2019 = "2019DataCSV.txt"
+#Process 2020
+readPath2020 = "2022-G-203 (2020).pdf"
+writePath2020 = "2020DataCSV.txt"
+#Process 2021
+readPath2021 = "2022-G-203 (2021).pdf"
+writePath2021 = "2021DataCSV.txt"
+#Process 2022
+readPath2022 = "2022-G-203 (2022).pdf"
+writePath2022 = "2017DataCSV.txt"
 
-#debug value
-#iDicts = 1 #start processing at specific page
-pageCount = 20 # only process X amount of records
 startTime = time.time()
-for iDicts in range(pageCount):
-#if iDicts:
-    image_List = pdf.get_page_images(iDicts)
-    numImageOnPage = len(image_List)
-    pageDictonary =  buildEmptyResultDic()
-    if(numImageOnPage ==1):
-        #get the Image that represents the Page
-        img = image_List[0]
-        xref = img[0]
-        pix = fitz.Pixmap(pdf,xref)
-        pageImageCV2 = pix2np(pix)
-        #Process Image and extact text
-        #try:
-        processPdfPage(pageImageCV2)
-        #except Exception as e:
-        #    print("My Code explode!")
-        #    print(e)
-        print("completed page", iDicts)
-    # percent = iDicts+1
-    # percent = round((percent/pageCount)*100,2)
-        #print("Prcessing - ", percent,"% (", iDicts," of ",pageCount, " )",end='\r')
+
+#do some work
+
+#Process 2017 data
+readfilepath = readPath2017
+writeFilePath = writePath2017
+processData(readfilepath)
+
 endTime = time.time()
 elapsedTime = endTime-startTime
 delta = timedelta(seconds=elapsedTime)
 
 pageDataArray = theWorld.getData()
-writeOutCSVFile(pageDataArray,outputFilePath)
+writeOutCSVFile(pageDataArray,writeFilePath)
 helped = theWorld.howMuchHelpAsked()
 print("Completed in, ", delta," Helps Asked = ",helped)
