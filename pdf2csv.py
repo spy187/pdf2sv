@@ -480,42 +480,47 @@ def findTableDimensions(pageMask):
 def processPdfPage(pageImg):
     thisPageData = PageData()
     thisdataContainer = None
-    #step 1 create a Mask to find countour rectanges for possible Regions of interest on page
-    pageMask,res = makeTableMask(pageImg)
+    date_Value = "01/01/1901"
+    try:
+        #step 1 create a Mask to find countour rectanges for possible Regions of interest on page
+        pageMask,res = makeTableMask(pageImg)
 
-    #step 2 find the Region of the Table using the mask
-    didFindTable,tableElement = findTableDimensions(pageMask)
-    if didFindTable == False :
-        print("Found no Contures on page")
-        thisdataContainer = TableDataContainer(theWorld.dataVersion)
-        thisdataContainer.fillBrokenContainer()
-        thisPageData.addData("01/01/1901",thisdataContainer)
-        addPageDataToMem(thisPageData)
-        return
-
-    #Check for Skew - skew most detectable when inspecting the table
-    isSkewed,roatated =  detectAndcorrectSkew(tableElement,pageImg)
-
-    if isSkewed:
-        #fixed skew so lets start all over
-        pageImg = roatated
-        pageMask = makeTableMask(pageImg)[0]
+        #step 2 find the Region of the Table using the mask
         didFindTable,tableElement = findTableDimensions(pageMask)
         if didFindTable == False :
-            print("Lost Cotures when correcting skew")
-            thisdataContainer = TableDataContainer(theWorld.dataVersion)
-            thisdataContainer.fillBrokenContainer()
-            thisPageData.addData("01/01/1901",thisdataContainer)
-            addPageDataToMem(thisPageData)
-            return
+            print("Found no Contures on page")
+            raise Exception("No Contours","Empty Page")
 
-    #step 5 create a mask which allows the isolation of individual cells
-    dataTableROI,dataTableROIMask = captureAndCleanDataTable(pageImg,tableElement)
+        #Check for Skew - skew most detectable when inspecting the table
+        isSkewed,roatated =  detectAndcorrectSkew(tableElement,pageImg)
 
-    #step 6 date is located just above table box
-    date_Value = captureAndCleanDate(pageImg,tableElement)
+        if isSkewed:
+            #fixed skew so lets start all over
+            pageImg = roatated
+            pageMask = makeTableMask(pageImg)[0]
+            didFindTable,tableElement = findTableDimensions(pageMask)
+            if didFindTable == False :
+                print("Lost Cotures when correcting skew")
+                raise Exception("No Contours", "All Skewed up")
 
-    thisdataContainer = processImagetoString(dataTableROI,dataTableROIMask)
+        #step 5 create a mask which allows the isolation of individual cells
+        dataTableROI,dataTableROIMask = captureAndCleanDataTable(pageImg,tableElement)
+
+        #step 6 date is located just above table box
+        date_Value = captureAndCleanDate(pageImg,tableElement)
+        thisdataContainer = processImagetoString(dataTableROI,dataTableROIMask)
+    except Exception as inst:
+        #create an empty page to add
+        print("Caught Exception processing Page")
+        print(type(inst))    # the exception instance
+        print(inst.args)     # arguments stored in .args
+        print(inst)          # __str__ allows args to be printed directly,
+                             # but may be overridden in exception subclasses
+        print(inst.args)     # unpack args
+        thisdataContainer = TableDataContainer(theWorld.dataVersion)
+        thisdataContainer.fillBrokenContainer()
+
+
     thisPageData.addData(date_Value,thisdataContainer)
     addPageDataToMem(thisPageData)
     return
@@ -540,7 +545,7 @@ def processData(readPath):
     print('Document Pages -',pageCount)
     #debug values
     iDicts = 0 #start processing at specific page
-    pageCount = 20 # only process X amount of records
+    #pageCount = 20 # only process X amount of records
 
     for iDicts in range(pageCount):
     #if iDicts:
