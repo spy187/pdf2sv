@@ -132,6 +132,7 @@ class StateAndMem:
     #want to be able to print recoreded data if things go catastrophicly awry
     def __init__(self):
         self.asked = 0
+        self.crashed =0
         self.pageDataArray =[]
         self.dataVersion =0
         self.versionSwapIndex =-1
@@ -153,6 +154,12 @@ class StateAndMem:
     def howMuchHelpAsked(self):
         helped = self.asked
         return helped
+    
+    def exceptionDetected(self):
+        self.crashed = self.crashed+1
+
+    def howManyExceptionsDetected(self):
+        return self.crashed
     
     def appendData(self,pageData):
         self.pageDataArray.append(pageData)
@@ -314,11 +321,6 @@ def captureAndCleanDataTable(pageImage,areaBox):
 
     #create conntours works with black background / white objects
     maskROI = cv2.bitwise_not(maskROI)
-    cv2.imshow("Cell Masks", maskROI)
-    cv2.imshow("table ROI",tableROI)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
     return tableROI,maskROI
 
 # for a sanitized Data Table
@@ -364,8 +366,15 @@ def processImagetoString(imgDataTable,imgDataMask):
 def processCellToString(img,configString):
     returnString ="NaN"
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #Clean up any possible boarder smuges
+    h,w =gray.shape
+    startpoint = (0,0)
+    endpoint = (w,h)
+    whiteBoarder = (255,255,255)
+    thickness = 5
+    cv2.rectangle(gray,startpoint,endpoint,whiteBoarder,thickness)
     blackandwhite = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)[1]
-
+    #if blank white cell - return 0
     if np.mean(blackandwhite) == 255:
         returnString = "0"
         return returnString
@@ -446,6 +455,7 @@ def captureAndCleanDate(pageImg,tableElement):
     dateRegion = pageImg[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
 
     gray = cv2.cvtColor(dateRegion, cv2.COLOR_BGR2GRAY)
+
     blackandwhite = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)[1]
     imageDataDict = proccessImageToData(blackandwhite,TESSERACT_DATE_CONFIG)
     n_boxes = len(imageDataDict['text'])
@@ -512,6 +522,7 @@ def processPdfPage(pageImg):
     except Exception as inst:
         #create an empty page to add
         print("Caught Exception processing Page")
+        theWorld.exceptionDetected()
         print(type(inst))    # the exception instance
         print(inst.args)     # arguments stored in .args
         print(inst)          # __str__ allows args to be printed directly,
@@ -544,8 +555,8 @@ def processData(readPath):
     pageCount = pdf.page_count
     print('Document Pages -',pageCount)
     #debug values
-    iDicts = 0 #start processing at specific page
-    #pageCount = 20 # only process X amount of records
+    iDicts = 1 #start processing at specific page
+    #pageCount = 3 # only process X amount of records
 
     for iDicts in range(pageCount):
     #if iDicts:
@@ -597,8 +608,8 @@ startTime = time.time()
 #do some work
 
 #Process 2017 data
-readfilepath = readPath2017
-writeFilePath = writePath2017
+readfilepath = readPath2019
+writeFilePath = writePath2019
 processData(readfilepath)
 
 endTime = time.time()
@@ -608,4 +619,6 @@ delta = timedelta(seconds=elapsedTime)
 pageDataArray = theWorld.getData()
 writeOutCSVFile(pageDataArray,writeFilePath)
 helped = theWorld.howMuchHelpAsked()
+crashes = theWorld.howManyExceptionsDetected()
 print("Completed in, ", delta," Helps Asked = ",helped)
+print("Exceptions caught =",crashes)
