@@ -28,8 +28,8 @@ CSV_HEADEERS = "Page, Date, Metro Scheduled, Metro Staffed, Metro BLS, IFT Sched
 
 #MAGIC_NUMBERS
 CELL_SAMPLE_WIDTH = 50 
-CELL_SAMPLE_HEIGHT = 30
-CROP_PIXEL = (2,2)
+CELL_SAMPLE_HEIGHT = 20
+CROP_PIXEL = (10,6,6,10) #Left,Top,bottom,right
 TRIM_HEIGHT = 120
 HORIZONTAL_SPECIFICITY = 20
 VERTICAL_SPECIFICITY_FIND_TABLE = 20
@@ -47,8 +47,7 @@ def sortAreaOnY(elm):
     return y
 
 class TableDataContainer:
-    def __init__(self,version = 0):
-        self.dataVersion = version
+    def __init__(self):
         self.Datalist = []
         self.dataFrame = None
 
@@ -73,12 +72,11 @@ class TableDataContainer:
 
         #place where version of file matters
         pageDataVersion = theWorld.getDataVersion()
-        swapped2020 = theWorld.get2020VersionSwapped()
         emptyDF.rename(columns={cols[0]:SCHEDULED, cols[1]:STAFFED, cols[2]:BLS, cols[3]:TANGO},inplace=True)
-        if (pageDataVersion < 2020) or (pageDataVersion == 2020 and swapped2020 == False):
-                #2017 - first part of 2020
+        match pageDataVersion:
+            case 0 :
                 emptyDF.rename(index = {rows[0]:METRO, rows[1]:IFT, rows[2]:SUBURBAN},inplace=True)
-        if (pageDataVersion == 2020 and swapped2020 == True) or ( pageDataVersion > 2020):
+            case 1:
                 #back part of 2020 and the future 
                 emptyDF.rename(index = {rows[0]:METRO, rows[1]:SUBURBAN, rows[2]:IFT},inplace=True)
             
@@ -156,11 +154,16 @@ class StateAndMem:
         #Set Version for 2017-202x
         self.dataVersion = version
     
-    def get2020VersionSwapped(self):
-        return self.swapped2020
 
     def getDataVersion(self):
-        return self.dataVersion
+        currentdataVersion = 0 # the Default 2017-2019
+
+        if self.dataVersion > 2020: #first part of 2020
+            currentdataVersion = 1
+        if self.dataVersion == 2020 and self.swapped2020: #latter part of 2020
+            currentdataVersion = 1
+
+        return currentdataVersion
 
     def askforhelp(self):
         self.asked = self.asked +1
@@ -262,26 +265,47 @@ def countTableRows(tableMesh):
     rowsArray.sort(key=sortAreaOnY)
     return rowsArray
 
+def verifyDesiredCell(contourElement,wMesh):
+    wantCell = False
+    x,y,w,h = cv2.boundingRect(contourElement)
+    midpoint = 0
+    fileDataVersion = theWorld.getDataVersion()
+    match fileDataVersion:
+        case 0:
+            midpoint = math.ceil(wMesh/2)
+        case 1:
+            midpoint = math.ceil(wMesh/2) -100
+
+    if x< midpoint and w < wMesh:
+        wantCell = True
+
+
+    return wantCell
+
+
+
 #each column has varying lenght, capture the area for each relevent column
 def countTableColumns(tableMesh):
     colsArray = []
     wMesh = tableMesh.shape[1]
+    #Isolate just the top row of the teable
     startPoint =(0,0)
     endPoint = (wMesh,CELL_SAMPLE_HEIGHT)
     whiteBoarder = (255,255,255)
-    thickness = 15
+    thickness = 5
     topRowOnlyimg = np.copy(tableMesh[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]])
     cv2.rectangle(topRowOnlyimg,startPoint,endPoint,whiteBoarder,thickness)
 
     columnContours = cv2.findContours(topRowOnlyimg, cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)[0]
 
-    midpoint = math.ceil(wMesh/2)
-    #only interested in cells left of midline / ignore the others
     for element in columnContours:
-        x,y,w,h = cv2.boundingRect(element)
-        if x< midpoint-5 and w<wMesh:
+
+        isCellwanted = verifyDesiredCell(element,wMesh)
+        if isCellwanted:
             colsArray.append(element)
 
+    if len(colsArray) !=5:
+        raise IndexError("Count Cols - mask failed")
 
     colsArray.sort(key=sortAreaOnX)
     return colsArray
@@ -321,10 +345,10 @@ def captureAndCleanDataTable(pageImage,areaBox):
         while rowIndex < 4:
             #only interested in first 4 rows after headers
             rowX,rowY,rowW,rowH = cv2.boundingRect(rows[rowIndex])
-            cornerUpLeft = colX+CROP_PIXEL[0],rowY+CROP_PIXEL[0]
-            cornerDownLeft = colX+CROP_PIXEL[0],rowY+rowH-CROP_PIXEL[1]
-            cornerDownRight = colX+colW-CROP_PIXEL[1],rowY+rowH-CROP_PIXEL[1]
-            cornerUpRight = colX+colW-CROP_PIXEL[1],rowY+CROP_PIXEL[0]
+            cornerUpLeft = colX+CROP_PIXEL[0],rowY+CROP_PIXEL[1]
+            cornerDownLeft = colX+CROP_PIXEL[0],rowY+rowH-CROP_PIXEL[2]
+            cornerDownRight = colX+colW-CROP_PIXEL[3],rowY+rowH-CROP_PIXEL[2]
+            cornerUpRight = colX+colW-CROP_PIXEL[3],rowY+CROP_PIXEL[1]
             contoursFillBlack = np.array([cornerUpLeft, cornerDownLeft, cornerDownRight, cornerUpRight])
             cv2.fillPoly(maskROI, pts =[contoursFillBlack], color=(0,0,0))
             rowIndex = rowIndex+1 #increment
@@ -347,8 +371,7 @@ def proccessImageToData(img,configString):
 #for each cell extarct a string and store it 
 #return a storage object containing all the data - sorted
 def processImagetoString(imgDataTable,imgDataMask):
-    fileDataVersion = theWorld.getDataVersion()
-    imageTableData = TableDataContainer(fileDataVersion)
+    imageTableData = TableDataContainer()
     countoursData = cv2.findContours(imgDataMask, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
     for element in countoursData:
         x, y, w, h = cv2.boundingRect(element)
@@ -520,10 +543,7 @@ def processPdfPage(pageImg):
         theWorld.exceptionDetected()
         print(type(inst))    # the exception instance
         print(inst.args)     # arguments stored in .args
-        print(inst)          # __str__ allows args to be printed directly,
-                             # but may be overridden in exception subclasses
-        print(inst.args)     # unpack args
-        thisdataContainer = TableDataContainer(theWorld.dataVersion)
+        thisdataContainer = TableDataContainer()
         thisdataContainer.fillBrokenContainer()
 
 
@@ -550,8 +570,9 @@ def processData(readPath):
     pageCount = pdf.page_count
     print('Document Pages -',pageCount)
     #debug values
-    #iDicts = 0#start processing at specific page (0 for begining of file)
-    #pageCount = iDicts +10 # only process X amount of records
+    #iDicts = 200#start processing at specific page (0 for begining of file)
+    #pageCount = iDicts +25 # only process X amount of records
+
 
     for iDicts in range(pageCount): # prferend loop method
     #while iDicts< pageCount: # Debug while loop
@@ -599,7 +620,7 @@ match command:
         readfilepath = "2022-G-203 (2020).pdf"
         writeFilePath = "2020DataCSV.txt"
         theWorld.setDataVersion(2020)
-        theWorld.defineWhereSwap(196)
+        theWorld.defineWhereSwap(195)
     case "2021":
         readfilepath = "2022-G-203 (2021).pdf"
         writeFilePath = "2021DataCSV.txt"
