@@ -23,21 +23,17 @@ BLS ='BLS'
 TANGO = 'Tango'
 TESSERACT_DATE_CONFIG = r'--psm 6'
 TESSERACT_NUMBER_CONFIG = r'--psm 7 -c tessedit_char_whitelist=0123456789'
-CSV_HEADEERS = "Page, Date, Metro Scheduled, Metro Staffed, Metro BLS, Sub/Rural Scehduled, Sub/Rural Staffed, Sub/Rural BLS, IFT Scheduled, IFT Staffed, IFT BLS, IFT Tango\n"
-TRIM_HEIGHT = 120
+CSV_HEADEERS = "Page, Date, Metro Scheduled, Metro Staffed, Metro BLS, IFT Scheduled, IFT Staffed, IFT BLS, IFT Tango,Sub/Rural Scehduled, Sub/Rural Staffed, Sub/Rural BLS\n"
+
 
 #MAGIC_NUMBERS
-X_THRESHOULD = 120
-DATE_BOX_SIZE_RANGE = (145,35,160,50) #min width, min Height, max width, max Height
-DATA_TABLE_SIZE_RANGE = (1000,185,1100,200) #min width, min height, max width, max height
-DATA_CELL_SIZE_RANGE =(80,25, 140, 40) #min width, min height, max width, max height
-MASK_CELL_SIZE_RANGE =(70, 20, 135, 30) #min width, min height, max width, max height
-MIN_CELL_WIDTH = 15
-ROW_ONE_Y_MIN = 10
-ROW_THREE_Y_MIN = 50 
-CROP_PIXEL = (6,6)
-TABLE_SHIFT_START = (104,38)
-TABLE_SHIFT_END = (568,150)
+CELL_SAMPLE_WIDTH = 50 
+CELL_SAMPLE_HEIGHT = 30
+CROP_PIXEL = (2,2)
+TRIM_HEIGHT = 120
+HORIZONTAL_SPECIFICITY = 20
+VERTICAL_SPECIFICITY_FIND_TABLE = 20
+VERTICAL_SPECIFICITY_FIND_CELL = 10
 
 #Objects
 def sortOnX(elm):
@@ -75,11 +71,16 @@ class TableDataContainer:
         for element in self.Datalist:
             emptyDF.at[element[1],element[0]] = element[2]
 
+        #place where version of file matters
+        pageDataVersion = theWorld.getDataVersion()
+        swapped2020 = theWorld.get2020VersionSwapped()
         emptyDF.rename(columns={cols[0]:SCHEDULED, cols[1]:STAFFED, cols[2]:BLS, cols[3]:TANGO},inplace=True)
-        if theWorld.dataVersion == 0:
-            emptyDF.rename(index = {rows[0]:METRO, rows[1]:IFT, rows[2]:SUBURBAN},inplace=True)
-        if theWorld.dataVersion == 1:
-             emptyDF.rename(index = {rows[0]:METRO, rows[1]:SUBURBAN, rows[2]:IFT},inplace=True)
+        if (pageDataVersion < 2020) or (pageDataVersion == 2020 and swapped2020 == False):
+                #2017 - first part of 2020
+                emptyDF.rename(index = {rows[0]:METRO, rows[1]:IFT, rows[2]:SUBURBAN},inplace=True)
+        if (pageDataVersion == 2020 and swapped2020 == True) or ( pageDataVersion > 2020):
+                #back part of 2020 and the future 
+                emptyDF.rename(index = {rows[0]:METRO, rows[1]:SUBURBAN, rows[2]:IFT},inplace=True)
             
         self.dataFrame = emptyDF
 
@@ -134,19 +135,32 @@ class StateAndMem:
         self.asked = 0
         self.crashed =0
         self.pageDataArray =[]
-        self.dataVersion =0
+        self.dataVersion =0 # default for 2017/2018/2019/ half of 2020
         self.versionSwapIndex =-1
         self.willSwap = False
+        self.swapped2020 = False
     
     def defineWhereSwap(self,swapIndex):
         self.willSwap = True
         self.versionSwapIndex = swapIndex
         
     def swapDataVersion(self, pageIndex):
+        #deal with the formating change in 2020 file
         if self.willSwap:
-            if pageIndex == self.versionSwapIndex:
-                self.dataVersion =1
-                print("The World Swapped to Data Version 1")
+            if pageIndex >= self.versionSwapIndex:
+                self.swapped2020 = True
+                print("The World Swapped to Data Version =",self.dataVersion)
+                self.willSwap = False # no more swaps until told to swap again
+    
+    def setDataVersion(self, version):
+        #Set Version for 2017-202x
+        self.dataVersion = version
+    
+    def get2020VersionSwapped(self):
+        return self.swapped2020
+
+    def getDataVersion(self):
+        return self.dataVersion
 
     def askforhelp(self):
         self.asked = self.asked +1
@@ -175,14 +189,6 @@ def pix2np(pix):
     im = np.ascontiguousarray(im[..., [2, 1, 0]])  # rgb to bgr
     return im
 
-#remove garbage header and footer - less data to process
-def trimHeaderFooter(image):
-    w,h,d = image.shape
-    startPoint = (0,0+TRIM_HEIGHT)
-    endPoint = (w,h-TRIM_HEIGHT)
-    trim = image[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
-    return trim
-
 def detectAndcorrectSkew(tableContour,skewedPage):
     
     #Testing the the squarness of the Table
@@ -197,11 +203,11 @@ def detectAndcorrectSkew(tableContour,skewedPage):
         center = (w // 2, h // 2)
         M = cv2.getRotationMatrix2D(center, rectAngle, 1.0)
         rotated = cv2.warpAffine(skewedPage, M, (w, h),flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    
+
     return needsCorrectedAngle, rotated
 
 #Return Masks that can be used to find Tables
-def makeTableMask(image):
+def makeTableMask(image,verticalGravity):
     #greyscale and thresh for cvOpen operations
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
@@ -211,7 +217,7 @@ def makeTableMask(image):
     vertical = np.copy(thresh)
     
     cols = horizontal.shape[1]
-    horizontal_size = math.ceil(cols / 20)
+    horizontal_size = math.ceil(cols / HORIZONTAL_SPECIFICITY)
 
     # Create structure element for extracting horizontal lines through morphology operations
     horizontalStructure = cv2.getStructuringElement(cv2.MORPH_RECT, (horizontal_size, 1))
@@ -222,7 +228,7 @@ def makeTableMask(image):
 
     # Specify size on vertical axis
     rows = vertical.shape[0]
-    verticalsize = math.ceil(rows / 10)
+    verticalsize = math.ceil(rows / verticalGravity)
 
     # Create structure element for extracting vertical lines through morphology operations
     verticalStructure = cv2.getStructuringElement(cv2.MORPH_RECT, (1, verticalsize))
@@ -235,16 +241,17 @@ def makeTableMask(image):
 
     return res, thresh
 
-#All rows are the same size, just need to know how many are in table
+#All rows are the Height, just need to know how many are in table
 def countTableRows(tableMesh):
     rowsArray = []
     hImg = tableMesh.shape[0]
     startPoint =(0,0)
-    endPoint = (100,hImg)
+    endPoint = (CELL_SAMPLE_WIDTH,hImg)
     whiteBoarder = (255,255,255)
     thickness = 10
     firstColumnOnlyimg = np.copy(tableMesh[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]])
     cv2.rectangle(firstColumnOnlyimg,startPoint,endPoint,whiteBoarder,thickness)
+
     rowContours = cv2.findContours(firstColumnOnlyimg, cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)[0]
     for elements in rowContours:
         x,y,w,h = cv2.boundingRect(elements)
@@ -260,12 +267,14 @@ def countTableColumns(tableMesh):
     colsArray = []
     wMesh = tableMesh.shape[1]
     startPoint =(0,0)
-    endPoint = (wMesh,40)
+    endPoint = (wMesh,CELL_SAMPLE_HEIGHT)
     whiteBoarder = (255,255,255)
-    thickness = 10
+    thickness = 15
     topRowOnlyimg = np.copy(tableMesh[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]])
     cv2.rectangle(topRowOnlyimg,startPoint,endPoint,whiteBoarder,thickness)
+
     columnContours = cv2.findContours(topRowOnlyimg, cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)[0]
+
     midpoint = math.ceil(wMesh/2)
     #only interested in cells left of midline / ignore the others
     for element in columnContours:
@@ -280,6 +289,7 @@ def countTableColumns(tableMesh):
 #Isolate and pre-Process the ROI representating the data table
 # @img = Master Image representing the whole page
 # @area box - provides dimensions of ROI
+# Returns ROI of Table and Mask to isolate each cell
 def captureAndCleanDataTable(pageImage,areaBox):
     #1) Crop working aread down to Table Range of Interest
     x, y, w, h = cv2.boundingRect(areaBox)
@@ -287,9 +297,10 @@ def captureAndCleanDataTable(pageImage,areaBox):
     endPoint = (x +w,y+h)
     tableROI = pageImage[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
 
-    #creat a new mask for cropped image - Table ROI
-    maskROI,thresh = makeTableMask(tableROI)
+    #creat a new mask for cropped image - Masking out cells of the Table
+    maskROI = makeTableMask(tableROI,VERTICAL_SPECIFICITY_FIND_CELL)[0]
 
+    #calcualate placement of rows and columns
     rows = countTableRows(maskROI)
     cols = countTableColumns(maskROI)
 
@@ -308,7 +319,7 @@ def captureAndCleanDataTable(pageImage,areaBox):
         rowIndex = 1 #skip column headers
         colX, colY, colW, colH = cv2.boundingRect(cols[colIndex])
         while rowIndex < 4:
-            #only interested in first 3 rows after headers
+            #only interested in first 4 rows after headers
             rowX,rowY,rowW,rowH = cv2.boundingRect(rows[rowIndex])
             cornerUpLeft = colX+CROP_PIXEL[0],rowY+CROP_PIXEL[0]
             cornerDownLeft = colX+CROP_PIXEL[0],rowY+rowH-CROP_PIXEL[1]
@@ -336,8 +347,8 @@ def proccessImageToData(img,configString):
 #for each cell extarct a string and store it 
 #return a storage object containing all the data - sorted
 def processImagetoString(imgDataTable,imgDataMask):
-  
-    imageTableData = TableDataContainer(theWorld.dataVersion)
+    fileDataVersion = theWorld.getDataVersion()
+    imageTableData = TableDataContainer(fileDataVersion)
     countoursData = cv2.findContours(imgDataMask, cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
     for element in countoursData:
         x, y, w, h = cv2.boundingRect(element)
@@ -348,12 +359,12 @@ def processImagetoString(imgDataTable,imgDataMask):
         cellImg = imgDataTable[startPoint[1]:endPoint[1],startPoint[0]:endPoint[0]]
 
         #OCR to read individual Cell
-        cellString = processCellToString(cellImg,TESSERACT_NUMBER_CONFIG)
+        cellString, testedImg = processCellToString(cellImg,TESSERACT_NUMBER_CONFIG)
         if len(cellString) ==0 :
             #unable to OCR the cell, ask a human
-            cellString = askAHuman(cellImg)
+            cellString = askAHuman(testedImg)
             
-        #Build a dict to hold the data & add data to container object
+        #Build a tuple to hold the data & add data to container object
         cellTuple = (x,y,cellString)
         imageTableData.addTableData(cellTuple)
 
@@ -371,18 +382,18 @@ def processCellToString(img,configString):
     startpoint = (0,0)
     endpoint = (w,h)
     whiteBoarder = (255,255,255)
-    thickness = 5
+    thickness = 4
     cv2.rectangle(gray,startpoint,endpoint,whiteBoarder,thickness)
     blackandwhite = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)[1]
     #if blank white cell - return 0
     if np.mean(blackandwhite) == 255:
         returnString = "0"
-        return returnString
+        return returnString,blackandwhite
     
     processedImg = processImageAlgorithmDefault(gray)
     returnString = pytesseract.image_to_string(processedImg,config=configString)
     returnString = returnString.strip()
-    return returnString
+    return returnString, processedImg
 
 def unsharp_mask(image, kernel_size=(5, 5), sigma=1.0, amount=1.0, threshold=0):
     """Return a sharpened version of the image, using an unsharp mask."""
@@ -401,23 +412,6 @@ def processImageAlgorithmDefault(grayImg):
     #optimize character height to 30p - Tesseract quirk
     resizeCubic = cv2.resize(grayImg, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
-    #sharpen = unsharp_mask(resizeCubic,amount=2.0)
-    #cv2.imshow("UnsharpMaks",sharpen)
-    #cv2.waitKey(0)
-    #cv2.destroyAllWindows()
-
-    #asked for help 11 times in 20 pages
-    #kernel = np.ones((1, 1), np.uint8)
-    #dilated = cv2.dilate(resizeCubic, kernel, iterations=1)
-    #eroded = cv2.erode(dilated, kernel, iterations=1)
-    #filtered = cv2.threshold(cv2.bilateralFilter(eroded, 5, 75, 75), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-
-    # asked for help 10 times in 20 pages, very accurate otherwise
-    #deNoised = resizeCubic.copy()
-    #cv2.fastNlMeansDenoising(resizeCubic,deNoised,15.0)
-    #thresh = cv2.threshold(deNoised, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-    #flipThresh = cv2.bitwise_not(thresh)
-
     #clean the noise and then dialate a little
     deNoised = resizeCubic.copy()
     cv2.fastNlMeansDenoising(resizeCubic,deNoised,15.0)
@@ -428,6 +422,7 @@ def processImageAlgorithmDefault(grayImg):
     return flipThresh
 
 def askAHuman(failImg):
+    #failed on OCR - Ask a Human
     cv2.imshow("Help Please",failImg)
     cv2.waitKey(2000)
     cv2.destroyAllWindows()
@@ -493,22 +488,22 @@ def processPdfPage(pageImg):
     date_Value = "01/01/1901"
     try:
         #step 1 create a Mask to find countour rectanges for possible Regions of interest on page
-        pageMask,res = makeTableMask(pageImg)
+        pageMask = makeTableMask(pageImg,VERTICAL_SPECIFICITY_FIND_TABLE)[0]
 
         #step 2 find the Region of the Table using the mask
         didFindTable,tableElement = findTableDimensions(pageMask)
         if didFindTable == False :
             print("Found no Contures on page")
             raise Exception("No Contours","Empty Page")
-
+        
         #Check for Skew - skew most detectable when inspecting the table
         isSkewed,roatated =  detectAndcorrectSkew(tableElement,pageImg)
 
         if isSkewed:
             #fixed skew so lets start all over
             pageImg = roatated
-            pageMask = makeTableMask(pageImg)[0]
-            didFindTable,tableElement = findTableDimensions(pageMask)
+            newpageMask = makeTableMask(pageImg,VERTICAL_SPECIFICITY_FIND_TABLE)[0]
+            didFindTable,tableElement = findTableDimensions(newpageMask)
             if didFindTable == False :
                 print("Lost Cotures when correcting skew")
                 raise Exception("No Contours", "All Skewed up")
@@ -555,10 +550,11 @@ def processData(readPath):
     pageCount = pdf.page_count
     print('Document Pages -',pageCount)
     #debug values
-    iDicts = 1 #start processing at specific page
-    #pageCount = 3 # only process X amount of records
+    #iDicts = 0#start processing at specific page (0 for begining of file)
+    #pageCount = iDicts +10 # only process X amount of records
 
-    for iDicts in range(pageCount):
+    for iDicts in range(pageCount): # prferend loop method
+    #while iDicts< pageCount: # Debug while loop
     #if iDicts:
         theWorld.swapDataVersion(iDicts)
         
@@ -577,6 +573,7 @@ def processData(readPath):
             #    print("My Code explode!")
             #    print(e)
             print("completed page", iDicts)
+            #iDicts = iDicts+1 #While debug code
 
 ###################################################################################
 # MAIN SCRIPT
@@ -584,32 +581,43 @@ print('pdf2csv')
 readfilepath = ""
 writeFilePath = "default.txt"
 
-#2017
-readPath2017 = "2022-G-203 (2017).pdf"
-writePath2017 = "2017DataCSV.txt"
-#Process 2018
-readPath2018 = "2022-G-203 (2018).pdf"
-writePath2018 = "2018DataCSV.txt"
-#Process 2019
-readPath2019 = "2022-G-203 (2019).pdf"
-writePath2019 = "2019DataCSV.txt"
-#Process 2020
-readPath2020 = "2022-G-203 (2020).pdf"
-writePath2020 = "2020DataCSV.txt"
-#Process 2021
-readPath2021 = "2022-G-203 (2021).pdf"
-writePath2021 = "2021DataCSV.txt"
-#Process 2022
-readPath2022 = "2022-G-203 (2022).pdf"
-writePath2022 = "2017DataCSV.txt"
+command = "2022"
+match command:
+    case "2017":
+        readfilepath = "2022-G-203 (2017).pdf"
+        writeFilePath = "2017DataCSV.txt"
+        theWorld.setDataVersion(2017)
+    case "2018":
+        readfilepath = "2022-G-203 (2018).pdf"
+        writeFilePath = "2018DataCSV.txt"
+        theWorld.setDataVersion(2018)
+    case "2019":
+        readfilepath = "2022-G-203 (2019).pdf"
+        writeFilePath = "2019DataCSV.txt"
+        theWorld.setDataVersion(2019)
+    case "2020":
+        readfilepath = "2022-G-203 (2020).pdf"
+        writeFilePath = "2020DataCSV.txt"
+        theWorld.setDataVersion(2020)
+        theWorld.defineWhereSwap(196)
+    case "2021":
+        readfilepath = "2022-G-203 (2021).pdf"
+        writeFilePath = "2021DataCSV.txt"
+        theWorld.setDataVersion(2021)
+    case "2022":
+        readfilepath = "2022-G-203 (2022).pdf"
+        writeFilePath = "2022DataCSV.txt"
+        theWorld.setDataVersion(2022)
+    case "2023":
+        print("no 2023 data yet")
+
+if len(readfilepath) ==0:
+    print("invalid data path")
+    exit(0)
 
 startTime = time.time()
 
 #do some work
-
-#Process 2017 data
-readfilepath = readPath2019
-writeFilePath = writePath2019
 processData(readfilepath)
 
 endTime = time.time()
