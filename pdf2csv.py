@@ -602,7 +602,7 @@ print('pdf2csv')
 readfilepath = ""
 writeFilePath = "default.txt"
 
-command = "2022"
+command = "2023-1"
 match command:
     case "2017":
         readfilepath = "2022-G-203 (2017).pdf"
@@ -625,12 +625,18 @@ match command:
         readfilepath = "2022-G-203 (2021).pdf"
         writeFilePath = "2021DataCSV.txt"
         theWorld.setDataVersion(2021)
-    case "2022":
-        readfilepath = "2022-G-203 (2022).pdf"
-        writeFilePath = "2022DataCSV.txt"
+    case "2022-1":
+        readfilepath = "2022-01-08.pdf"
+        writeFilePath = "2022DataCSV-01.txt"
         theWorld.setDataVersion(2022)
-    case "2023":
-        print("no 2023 data yet")
+    case "2022-2":
+        readfilepath = "2022-09-12.pdf"
+        writeFilePath = "2022DataCSV-02.txt"
+        theWorld.setDataVersion(2022)
+    case "2023-1":
+        readfilepath = "2023-04-30.pdf"
+        writeFilePath = "2023DataCSV-01.txt"
+        theWorld.setDataVersion(2022)
 
 if len(readfilepath) ==0:
     print("invalid data path")
